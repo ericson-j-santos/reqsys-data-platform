@@ -347,7 +347,7 @@ def analyze_sqlite_schema(source: str | Path) -> dict[str, Any]:
                 if column["pg_type"] == "TIMESTAMPTZ"
             ),
             "json_columns": sum(
-                1 for item in tables for column in item["columns"] if column["pg_type"] == "JSONB"
+                1 for item in tables for column in item["columns"] if column["pg_type"] in {"JSON", "JSONB"}
             ),
             "numeric_columns": sum(
                 1
