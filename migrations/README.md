@@ -14,23 +14,35 @@ Toda migração deve implementar:
 - rollback documentado;
 - evidência por ambiente, SHA e `correlation_id`.
 
-## SQLite -> PostgreSQL v1
+## SQLite -> PostgreSQL v2
 
-`sqlite_to_postgres.py` migra tabelas compatíveis para um **schema isolado** no
-PostgreSQL. O incremento inicial é deliberadamente fail-closed: somente contratos
-que podem ser reproduzidos com segurança são aceitos.
+O contrato agora é dirigido pelo schema SQLite efetivamente materializado. O
+analisador `sqlite_schema_contract.py` lê apenas metadados e falha fechado para
+semânticas que ainda não possuem conversão explícita.
 
-### Garantias
+Contratos suportados no v2, extraídos da `main` atual do ReqSys:
+- `DATE` e `DATETIME` (DATETIME é tratado como UTC e migrado para TIMESTAMPTZ);
+- JSON -> JSONB;
+- NUMERIC/DECIMAL preservando precisão e escala;
+- defaults `CURRENT_TIMESTAMP`, literais, números e NULL;
+- índices secundários e índices únicos;
+- foreign keys, inclusive ações ON UPDATE/ON DELETE permitidas pelo SQLite;
+- PK inteira simples como identity PostgreSQL, com sequence sincronizada após a carga.
 
-- abre a origem SQLite em modo somente leitura;
-- exige `PRIMARY KEY` em toda tabela para replay idempotente;
-- rejeita tipos, defaults, FKs e índices secundários ainda não contratados;
-- aceita somente `local`, `dev`, `ci` e `test`; HML/STG/PROD ficam bloqueados;
-- usa `correlation_id` + fingerprint da origem como chave de idempotência;
-- faz UPSERT por chave primária;
-- compara quantidade e SHA-256 canônico de todas as linhas após a carga;
-- grava evidência em `<schema>._migration_runs`;
-- executa criação/carga/verificação em uma transação PostgreSQL.
+A fonte do contrato do produto fica em
+`contracts/reqsys-product-schema-source.json`. O CI faz checkout do SHA fixado,
+materializa `Base.metadata` em SQLite usando o próprio ReqSys, analisa o schema,
+migra todas as tabelas para PostgreSQL 16 e verifica tabelas, índices, FKs e
+replay idempotente por leitura independente.
+
+### Analisar um SQLite
+
+```bash
+python migrations/sqlite_schema_contract.py \
+  --source /caminho/base.sqlite \
+  --require-supported \
+  --json /tmp/schema-report.json
+```
 
 ### Preflight
 
@@ -57,15 +69,16 @@ python migrations/sqlite_to_postgres.py \
 ```
 
 Repetir exatamente a mesma entrada e o mesmo `correlation_id` não duplica
-registros. Reusar o `correlation_id` com uma origem diferente falha fechado.
+registros. Reusar o `correlation_id` com origem diferente falha fechado.
 
-### Rollback
+### Limites e rollback
+
+Partial/expression indexes, colunas geradas, tipos sem mapeamento explícito e
+referências FK fora do escopo continuam bloqueados.
 
 Antes do commit, qualquer falha desfaz automaticamente a transação PostgreSQL.
-Após uma migração concluída, o rollback técnico deste v1 é remover **apenas o
-schema isolado criado para a migração**, depois de preservar a evidência
-necessária. Essa remoção é destrutiva e deve ser uma ação governada separada.
+Após uma migração concluída, o rollback técnico continua sendo remover somente o
+schema isolado criado para a migração, em ação governada separada.
 
-O SQLite de origem deve permanecer disponível em modo somente leitura durante o
-período de validação/cutover. Este repositório não promove automaticamente HML,
-STG ou PROD.
+HML/STG/PROD não são habilitados por este código. O SQLite de origem deve
+permanecer disponível em modo somente leitura durante validação/cutover.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed SQLite -> PostgreSQL migration for isolated local/DEV/CI schemas."""
+"""Governed SQLite -> PostgreSQL migration for isolated local/DEV/CI schemas."""
 
 from __future__ import annotations
 
@@ -8,11 +8,19 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
-from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
+
+from migrations.sqlite_schema_contract import (
+    ColumnContract,
+    ForeignKeyContract,
+    IndexContract,
+    SchemaContractError,
+    TableContract,
+    strict_schema_contract,
+)
 
 SAFE_ENVIRONMENTS = {"local", "dev", "ci", "test"}
 SAFE_SCHEMA = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -31,134 +39,42 @@ class VerificationError(RuntimeError):
     """Raised when post-migration evidence differs from the source."""
 
 
-@dataclass(frozen=True)
-class ColumnContract:
-    name: str
-    pg_type: str
-    nullable: bool
-    pk_order: int
-
-
-@dataclass(frozen=True)
-class TableContract:
-    name: str
-    columns: tuple[ColumnContract, ...]
-
-    @property
-    def primary_key(self) -> tuple[str, ...]:
-        ordered = sorted(
-            (column for column in self.columns if column.pk_order > 0),
-            key=lambda column: column.pk_order,
-        )
-        return tuple(column.name for column in ordered)
-
-
-def _load_psycopg() -> tuple[Any, Any]:
+def _load_psycopg() -> tuple[Any, Any, Any]:
     try:
         import psycopg
         from psycopg import sql
+        from psycopg.types.json import Jsonb
     except ImportError as exc:
         raise RuntimeError(
             "psycopg is required for PostgreSQL migration; install requirements-ci.txt"
         ) from exc
-    return psycopg, sql
+    return psycopg, sql, Jsonb
 
 
-def _quote_sqlite_identifier(name: str) -> str:
-    return '"' + name.replace('"', '""') + '"'
+def _canonical_datetime(value: Any) -> str:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value).strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
-def _sqlite_connect_readonly(source: Path) -> sqlite3.Connection:
-    if not source.is_file():
-        raise FileNotFoundError(f"source database does not exist: {source}")
-    connection = sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True)
-    connection.execute("PRAGMA query_only = ON")
-    connection.execute("BEGIN")
-    return connection
+def _canonical_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return date.fromisoformat(str(value).strip()).isoformat()
 
 
-def _map_type(declared_type: str) -> str:
-    normalized = declared_type.strip().upper()
-    if not normalized:
-        raise PreflightError("columns without an explicit SQLite type are not supported")
-    if "BOOL" in normalized:
-        return "BOOLEAN"
-    if "INT" in normalized:
-        return "BIGINT"
-    if any(token in normalized for token in ("CHAR", "CLOB", "TEXT", "VARCHAR")):
-        return "TEXT"
-    if any(token in normalized for token in ("REAL", "FLOA", "DOUB")):
-        return "DOUBLE PRECISION"
-    if "BLOB" in normalized:
-        return "BYTEA"
-    if any(token in normalized for token in ("NUMERIC", "DECIMAL")):
-        return "NUMERIC"
-    raise PreflightError(f"unsupported SQLite declared type: {declared_type}")
-
-
-def _table_contract(connection: sqlite3.Connection, table: str) -> TableContract:
-    quoted = _quote_sqlite_identifier(table)
-    raw_columns = connection.execute(f"PRAGMA table_xinfo({quoted})").fetchall()
-    if not raw_columns:
-        raise PreflightError(f"table has no visible columns: {table}")
-
-    columns: list[ColumnContract] = []
-    for _cid, name, declared_type, notnull, default_value, pk_order, hidden in raw_columns:
-        if hidden:
-            raise PreflightError(f"generated/hidden columns are not supported: {table}.{name}")
-        if default_value is not None:
-            raise PreflightError(
-                f"SQLite defaults require an explicit compatibility contract: {table}.{name}"
-            )
-        columns.append(
-            ColumnContract(
-                name=name,
-                pg_type=_map_type(declared_type),
-                nullable=not bool(notnull) and not bool(pk_order),
-                pk_order=int(pk_order),
-            )
-        )
-
-    contract = TableContract(name=table, columns=tuple(columns))
-    if not contract.primary_key:
-        raise PreflightError(f"table requires a primary key for idempotent migration: {table}")
-
-    if connection.execute(f"PRAGMA foreign_key_list({quoted})").fetchall():
-        raise PreflightError(
-            f"foreign keys require an explicit ordering/constraint contract: {table}"
-        )
-
-    indexes = connection.execute(f"PRAGMA index_list({quoted})").fetchall()
-    unsupported = [row for row in indexes if len(row) >= 4 and row[3] != "pk"]
-    if unsupported:
-        raise PreflightError(
-            f"secondary indexes require an explicit compatibility contract: {table}"
-        )
-    return contract
-
-
-def _source_contract(source: Path) -> tuple[sqlite3.Connection, tuple[TableContract, ...]]:
-    connection = _sqlite_connect_readonly(source)
-    try:
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
-        if integrity != "ok":
-            raise PreflightError(f"SQLite integrity check failed: {integrity}")
-
-        table_names = [
-            name
-            for (name,) in connection.execute(
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            ).fetchall()
-        ]
-        if not table_names:
-            raise PreflightError("SQLite source contains no user tables")
-
-        contracts = tuple(_table_contract(connection, table) for table in table_names)
-        return connection, contracts
-    except Exception:
-        connection.close()
-        raise
+def _canonical_json(value: Any) -> str:
+    parsed = json.loads(value) if isinstance(value, str) else value
+    return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _canonical_value(value: Any, pg_type: str) -> Any:
@@ -170,17 +86,23 @@ def _canonical_value(value: Any, pg_type: str) -> Any:
         return int(value)
     if pg_type == "DOUBLE PRECISION":
         return format(float(value), ".17g")
-    if pg_type == "NUMERIC":
+    if pg_type.startswith("NUMERIC"):
         decimal = Decimal(str(value))
         if decimal == 0:
             return "0"
         return format(decimal.normalize(), "f")
     if pg_type == "BYTEA":
         return bytes(value).hex()
+    if pg_type == "DATE":
+        return _canonical_date(value)
+    if pg_type == "TIMESTAMPTZ":
+        return _canonical_datetime(value)
+    if pg_type == "JSONB":
+        return _canonical_json(value)
     return str(value)
 
 
-def _coerce_for_postgres(value: Any, pg_type: str) -> Any:
+def _coerce_for_postgres(value: Any, pg_type: str, Jsonb: Any) -> Any:
     if value is None:
         return None
     if pg_type == "BOOLEAN":
@@ -189,11 +111,44 @@ def _coerce_for_postgres(value: Any, pg_type: str) -> Any:
         return int(value)
     if pg_type == "DOUBLE PRECISION":
         return float(value)
-    if pg_type == "NUMERIC":
+    if pg_type.startswith("NUMERIC"):
         return Decimal(str(value))
     if pg_type == "BYTEA":
         return bytes(value)
+    if pg_type == "DATE":
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return value
+        return date.fromisoformat(str(value).strip())
+    if pg_type == "TIMESTAMPTZ":
+        raw = value
+        if not isinstance(raw, datetime):
+            text = str(raw).strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            raw = datetime.fromisoformat(text)
+        if raw.tzinfo is None:
+            raw = raw.replace(tzinfo=timezone.utc)
+        return raw
+    if pg_type == "JSONB":
+        parsed = json.loads(value) if isinstance(value, str) else value
+        return Jsonb(parsed)
     return str(value)
+
+
+def _sqlite_rows(
+    connection: Any,
+    contract: TableContract,
+) -> Iterable[tuple[Any, ...]]:
+    from migrations.sqlite_schema_contract import quote_sqlite_identifier
+
+    columns = ", ".join(quote_sqlite_identifier(c.name) for c in contract.columns)
+    order = ", ".join(
+        quote_sqlite_identifier(name) for name in contract.primary_key
+    )
+    cursor = connection.execute(
+        f"SELECT {columns} FROM {quote_sqlite_identifier(contract.name)} ORDER BY {order}"
+    )
+    yield from cursor
 
 
 def _hash_rows(
@@ -215,57 +170,47 @@ def _hash_rows(
     return count, digest.hexdigest()
 
 
-def _sqlite_rows(
-    connection: sqlite3.Connection,
-    contract: TableContract,
-) -> Iterable[tuple[Any, ...]]:
-    columns = ", ".join(_quote_sqlite_identifier(c.name) for c in contract.columns)
-    order = ", ".join(_quote_sqlite_identifier(name) for name in contract.primary_key)
-    cursor = connection.execute(
-        f"SELECT {columns} FROM {_quote_sqlite_identifier(contract.name)} ORDER BY {order}"
-    )
-    yield from cursor
-
-
 def _source_evidence(
-    connection: sqlite3.Connection,
+    connection: Any,
     contracts: tuple[TableContract, ...],
 ) -> tuple[dict[str, dict[str, Any]], str]:
     tables: dict[str, dict[str, Any]] = {}
     overall = hashlib.sha256()
     for contract in contracts:
         count, row_hash = _hash_rows(_sqlite_rows(connection, contract), contract.columns)
-        schema_payload = {
-            "name": contract.name,
-            "columns": [
-                {
-                    "name": column.name,
-                    "pg_type": column.pg_type,
-                    "nullable": column.nullable,
-                    "pk_order": column.pk_order,
-                }
-                for column in contract.columns
-            ],
-        }
+        schema_payload = contract.to_dict()
         tables[contract.name] = {
             "source_count": count,
             "source_sha256": row_hash,
             "schema": schema_payload,
         }
-        overall.update(json.dumps(schema_payload, sort_keys=True).encode("utf-8"))
+        overall.update(
+            json.dumps(schema_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        )
         overall.update(row_hash.encode("ascii"))
     return tables, overall.hexdigest()
 
 
-def _expected_pg_signature(contract: TableContract) -> tuple[tuple[Any, ...], ...]:
-    return tuple(
-        (
-            column.name,
-            column.pg_type.lower(),
-            "YES" if column.nullable else "NO",
-        )
-        for column in contract.columns
-    )
+def _pg_information_schema_type(pg_type: str) -> str:
+    if pg_type == "BIGINT":
+        return "bigint"
+    if pg_type == "BOOLEAN":
+        return "boolean"
+    if pg_type == "TEXT":
+        return "text"
+    if pg_type == "DOUBLE PRECISION":
+        return "double precision"
+    if pg_type.startswith("NUMERIC"):
+        return "numeric"
+    if pg_type == "BYTEA":
+        return "bytea"
+    if pg_type == "DATE":
+        return "date"
+    if pg_type == "TIMESTAMPTZ":
+        return "timestamp with time zone"
+    if pg_type == "JSONB":
+        return "jsonb"
+    raise PreflightError(f"unsupported PostgreSQL type mapping: {pg_type}")
 
 
 def _postgres_table_signature(
@@ -275,7 +220,7 @@ def _postgres_table_signature(
 ) -> tuple[tuple[Any, ...], ...]:
     rows = pg.execute(
         """
-        SELECT column_name, data_type, is_nullable
+        SELECT column_name, data_type, is_nullable, is_identity
         FROM information_schema.columns
         WHERE table_schema = %s AND table_name = %s
         ORDER BY ordinal_position
@@ -283,6 +228,18 @@ def _postgres_table_signature(
         (schema, table),
     ).fetchall()
     return tuple(tuple(row) for row in rows)
+
+
+def _expected_pg_signature(contract: TableContract) -> tuple[tuple[Any, ...], ...]:
+    return tuple(
+        (
+            column.name,
+            _pg_information_schema_type(column.pg_type),
+            "YES" if column.nullable else "NO",
+            "YES" if contract.identity_column == column.name else "NO",
+        )
+        for column in contract.columns
+    )
 
 
 def _postgres_primary_key(pg: Any, schema: str, table: str) -> tuple[str, ...]:
@@ -324,6 +281,17 @@ def _assert_existing_table_compatible(
         )
 
 
+def _validate_reference_scope(contracts: tuple[TableContract, ...]) -> None:
+    names = {contract.name for contract in contracts}
+    for contract in contracts:
+        for foreign_key in contract.foreign_keys:
+            if foreign_key.referenced_table not in names:
+                raise PreflightError(
+                    f"foreign key references a table outside the migration scope: "
+                    f"{contract.name}->{foreign_key.referenced_table}"
+                )
+
+
 def preflight_migration(
     source: str | Path,
     postgres_dsn: str,
@@ -342,13 +310,17 @@ def preflight_migration(
         raise PreflightError("PostgreSQL DSN is required")
 
     source_path = Path(source).resolve()
-    sqlite_db, contracts = _source_contract(source_path)
     try:
+        sqlite_db, contracts = strict_schema_contract(source_path)
+    except SchemaContractError as exc:
+        raise PreflightError(str(exc)) from exc
+    try:
+        _validate_reference_scope(contracts)
         source_tables, source_fingerprint = _source_evidence(sqlite_db, contracts)
     finally:
         sqlite_db.close()
 
-    psycopg, _sql = _load_psycopg()
+    psycopg, _sql, _Jsonb = _load_psycopg()
     with psycopg.connect(postgres_dsn) as pg:
         database, server_version, can_create = pg.execute(
             """
@@ -375,9 +347,7 @@ def preflight_migration(
                     f"PostgreSQL user lacks CREATE privilege on existing schema: {schema}"
                 )
         elif not can_create:
-            raise PreflightError(
-                "PostgreSQL user lacks CREATE privilege on target database"
-            )
+            raise PreflightError("PostgreSQL user lacks CREATE privilege on target database")
 
         for contract in contracts:
             _assert_existing_table_compatible(pg, schema, contract)
@@ -414,6 +384,21 @@ def _create_schema_and_audit(pg: Any, sql: Any, schema: str) -> None:
     )
 
 
+def _default_fragment(sql: Any, column: ColumnContract) -> Any | None:
+    kind = column.default_kind
+    if kind is None:
+        return None
+    if kind == "current_timestamp":
+        return sql.SQL("DEFAULT CURRENT_TIMESTAMP")
+    if kind == "null":
+        return sql.SQL("DEFAULT NULL")
+    if kind == "literal":
+        return sql.SQL("DEFAULT {}").format(sql.Literal(column.default_value))
+    if kind == "numeric":
+        return sql.SQL("DEFAULT {}").format(sql.Literal(Decimal(column.default_value or "0")))
+    raise PreflightError(f"unsupported normalized default kind: {kind}")
+
+
 def _create_target_table(
     pg: Any,
     sql: Any,
@@ -423,15 +408,18 @@ def _create_target_table(
     definitions: list[Any] = []
     for column in contract.columns:
         parts = [sql.Identifier(column.name), sql.SQL(column.pg_type)]
+        if contract.identity_column == column.name:
+            parts.append(sql.SQL("GENERATED BY DEFAULT AS IDENTITY"))
+        default = _default_fragment(sql, column)
+        if default is not None:
+            parts.append(default)
         if not column.nullable:
             parts.append(sql.SQL("NOT NULL"))
         definitions.append(sql.SQL(" ").join(parts))
 
     definitions.append(
         sql.SQL("PRIMARY KEY ({})").format(
-            sql.SQL(", ").join(
-                sql.Identifier(name) for name in contract.primary_key
-            )
+            sql.SQL(", ").join(sql.Identifier(name) for name in contract.primary_key)
         )
     )
     pg.execute(
@@ -445,9 +433,10 @@ def _create_target_table(
 
 
 def _upsert_source_rows(
-    sqlite_db: sqlite3.Connection,
+    sqlite_db: Any,
     pg: Any,
     sql: Any,
+    Jsonb: Any,
     schema: str,
     contract: TableContract,
     *,
@@ -465,9 +454,7 @@ def _upsert_source_rows(
         sql.SQL(", ").join(sql.Placeholder() for _ in column_names),
     )
     statement += sql.SQL(" ON CONFLICT ({}) ").format(
-        sql.SQL(", ").join(
-            sql.Identifier(name) for name in contract.primary_key
-        )
+        sql.SQL(", ").join(sql.Identifier(name) for name in contract.primary_key)
     )
     if non_pk:
         statement += sql.SQL("DO UPDATE SET {}").format(
@@ -482,10 +469,14 @@ def _upsert_source_rows(
     else:
         statement += sql.SQL("DO NOTHING")
 
-    columns = ", ".join(_quote_sqlite_identifier(c.name) for c in contract.columns)
-    order = ", ".join(_quote_sqlite_identifier(name) for name in contract.primary_key)
+    from migrations.sqlite_schema_contract import quote_sqlite_identifier
+
+    columns = ", ".join(quote_sqlite_identifier(c.name) for c in contract.columns)
+    order = ", ".join(
+        quote_sqlite_identifier(name) for name in contract.primary_key
+    )
     cursor = sqlite_db.execute(
-        f"SELECT {columns} FROM {_quote_sqlite_identifier(contract.name)} ORDER BY {order}"
+        f"SELECT {columns} FROM {quote_sqlite_identifier(contract.name)} ORDER BY {order}"
     )
 
     migrated = 0
@@ -496,7 +487,7 @@ def _upsert_source_rows(
                 break
             payload = [
                 tuple(
-                    _coerce_for_postgres(value, column.pg_type)
+                    _coerce_for_postgres(value, column.pg_type, Jsonb)
                     for value, column in zip(row, contract.columns, strict=True)
                 )
                 for row in rows
@@ -527,6 +518,140 @@ def _postgres_rows(
     yield from cursor
 
 
+def _create_indexes(
+    pg: Any,
+    sql: Any,
+    schema: str,
+    contract: TableContract,
+) -> None:
+    for index in contract.indexes:
+        unique = sql.SQL("UNIQUE ") if index.unique else sql.SQL("")
+        pg.execute(
+            sql.SQL("CREATE {}INDEX IF NOT EXISTS {} ON {}.{} ({})").format(
+                unique,
+                sql.Identifier(index.target_name),
+                sql.Identifier(schema),
+                sql.Identifier(contract.name),
+                sql.SQL(", ").join(sql.Identifier(column) for column in index.columns),
+            )
+        )
+
+
+def _constraint_exists(pg: Any, schema: str, name: str) -> bool:
+    return bool(
+        pg.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM pg_constraint c
+                JOIN pg_namespace n ON n.oid = c.connamespace
+                WHERE n.nspname = %s AND c.conname = %s
+            )
+            """,
+            (schema, name),
+        ).fetchone()[0]
+    )
+
+
+def _create_foreign_keys(
+    pg: Any,
+    sql: Any,
+    schema: str,
+    contract: TableContract,
+) -> None:
+    for foreign_key in contract.foreign_keys:
+        if _constraint_exists(pg, schema, foreign_key.target_name):
+            continue
+        pg.execute(
+            sql.SQL(
+                "ALTER TABLE {}.{} ADD CONSTRAINT {} FOREIGN KEY ({}) "
+                "REFERENCES {}.{} ({}) ON UPDATE {} ON DELETE {}"
+            ).format(
+                sql.Identifier(schema),
+                sql.Identifier(contract.name),
+                sql.Identifier(foreign_key.target_name),
+                sql.SQL(", ").join(
+                    sql.Identifier(column) for column in foreign_key.columns
+                ),
+                sql.Identifier(schema),
+                sql.Identifier(foreign_key.referenced_table),
+                sql.SQL(", ").join(
+                    sql.Identifier(column)
+                    for column in foreign_key.referenced_columns
+                ),
+                sql.SQL(foreign_key.on_update),
+                sql.SQL(foreign_key.on_delete),
+            )
+        )
+
+
+def _sync_identity_sequence(
+    pg: Any,
+    sql: Any,
+    schema: str,
+    contract: TableContract,
+) -> None:
+    column = contract.identity_column
+    if not column:
+        return
+    relation = pg.execute(
+        "SELECT format('%I.%I', %s, %s)",
+        (schema, contract.name),
+    ).fetchone()[0]
+    sequence = pg.execute(
+        "SELECT pg_get_serial_sequence(%s, %s)",
+        (relation, column),
+    ).fetchone()[0]
+    if not sequence:
+        return
+    maximum = pg.execute(
+        sql.SQL("SELECT MAX({}) FROM {}.{}").format(
+            sql.Identifier(column),
+            sql.Identifier(schema),
+            sql.Identifier(contract.name),
+        )
+    ).fetchone()[0]
+    if maximum is not None:
+        pg.execute("SELECT setval(%s::regclass, %s, true)", (sequence, maximum))
+
+
+def _verify_indexes(
+    pg: Any,
+    schema: str,
+    contract: TableContract,
+) -> None:
+    observed = {
+        name
+        for (name,) in pg.execute(
+            "SELECT indexname FROM pg_indexes WHERE schemaname = %s AND tablename = %s",
+            (schema, contract.name),
+        ).fetchall()
+    }
+    missing = [
+        index.target_name for index in contract.indexes if index.target_name not in observed
+    ]
+    if missing:
+        raise VerificationError(
+            f"destination indexes missing for {contract.name}: {missing}"
+        )
+
+
+def _verify_foreign_keys(
+    pg: Any,
+    schema: str,
+    contract: TableContract,
+) -> None:
+    missing = [
+        foreign_key.target_name
+        for foreign_key in contract.foreign_keys
+        if not _constraint_exists(pg, schema, foreign_key.target_name)
+    ]
+    if missing:
+        raise VerificationError(
+            f"destination foreign keys missing for {contract.name}: {missing}"
+        )
+
+
 def migrate_sqlite_to_postgres(
     source: str | Path,
     postgres_dsn: str,
@@ -547,8 +672,11 @@ def migrate_sqlite_to_postgres(
         environment=environment,
     )
     source_path = Path(source).resolve()
-    sqlite_db, contracts = _source_contract(source_path)
-    psycopg, sql = _load_psycopg()
+    try:
+        sqlite_db, contracts = strict_schema_contract(source_path)
+    except SchemaContractError as exc:
+        raise PreflightError(str(exc)) from exc
+    psycopg, sql, Jsonb = _load_psycopg()
 
     try:
         current_tables, current_fingerprint = _source_evidence(sqlite_db, contracts)
@@ -557,9 +685,7 @@ def migrate_sqlite_to_postgres(
                 "SQLite source changed after preflight; rerun preflight"
             )
         if set(current_tables) != set(plan["tables"]):
-            raise MigrationConflictError(
-                "SQLite source contract changed after preflight"
-            )
+            raise MigrationConflictError("SQLite source contract changed after preflight")
 
         with psycopg.connect(postgres_dsn) as pg:
             _create_schema_and_audit(pg, sql, schema)
@@ -579,17 +705,24 @@ def migrate_sqlite_to_postgres(
                     "correlation_id was already used with a different source fingerprint"
                 )
 
-            table_evidence: dict[str, dict[str, Any]] = {}
             for contract in contracts:
                 _create_target_table(pg, sql, schema, contract)
-                migrated = _upsert_source_rows(
+
+            rows_processed: dict[str, int] = {}
+            for contract in contracts:
+                rows_processed[contract.name] = _upsert_source_rows(
                     sqlite_db,
                     pg,
                     sql,
+                    Jsonb,
                     schema,
                     contract,
                     batch_size=batch_size,
                 )
+                _sync_identity_sequence(pg, sql, schema, contract)
+
+            table_evidence: dict[str, dict[str, Any]] = {}
+            for contract in contracts:
                 target_count, target_hash = _hash_rows(
                     _postgres_rows(pg, sql, schema, contract),
                     contract.columns,
@@ -609,8 +742,18 @@ def migrate_sqlite_to_postgres(
                     "target_count": target_count,
                     "source_sha256": source_evidence["source_sha256"],
                     "target_sha256": target_hash,
-                    "rows_processed": migrated,
+                    "rows_processed": rows_processed[contract.name],
+                    "indexes": len(contract.indexes),
+                    "foreign_keys": len(contract.foreign_keys),
                 }
+
+            for contract in contracts:
+                _create_indexes(pg, sql, schema, contract)
+            for contract in contracts:
+                _create_foreign_keys(pg, sql, schema, contract)
+            for contract in contracts:
+                _verify_indexes(pg, schema, contract)
+                _verify_foreign_keys(pg, schema, contract)
 
             evidence = {
                 "status": "completed",
@@ -658,9 +801,7 @@ def migrate_sqlite_to_postgres(
 def _dsn_from_environment(variable: str) -> str:
     value = os.environ.get(variable, "")
     if not value:
-        raise PreflightError(
-            f"required environment variable is not set: {variable}"
-        )
+        raise PreflightError(f"required environment variable is not set: {variable}")
     return value
 
 
