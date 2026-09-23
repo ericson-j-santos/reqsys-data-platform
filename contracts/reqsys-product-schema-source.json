@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "source_repository": "ericson-j-santos/reqsys-v2-enterprise-real",
-  "source_sha": "680b39d1a722e4b2bb63ea09033c8bbf880e906d",
+  "source_sha": "bf7ad8f9283522f208a47ed65cdb6f00d9d39bd8",
   "source_kind": "sqlalchemy-base-metadata-materialized-as-sqlite",
   "model_files_scanned": 30,
   "static_occurrences": {
@@ -25,5 +25,7 @@
     "secondary_and_unique_indexes",
     "foreign_keys_with_actions",
     "integer_primary_key_identity"
-  ]
+  ],
+  "source_revalidated_from_sha": "680b39d1a722e4b2bb63ea09033c8bbf880e906d",
+  "source_schema_diff_from_previous": "none"
 }
