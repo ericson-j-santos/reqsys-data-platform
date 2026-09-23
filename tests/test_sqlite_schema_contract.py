@@ -8,11 +8,19 @@ from pathlib import Path
 from migrations.sqlite_schema_contract import (
     SchemaContractError,
     analyze_sqlite_schema,
+    map_type,
     strict_schema_contract,
 )
 
 
 class SQLiteSchemaContractTest(unittest.TestCase):
+    def test_type_mapping_preserves_product_postgres_semantics(self) -> None:
+        self.assertEqual(map_type("INTEGER"), "INTEGER")
+        self.assertEqual(map_type("VARCHAR(120)"), "VARCHAR(120)")
+        self.assertEqual(map_type("JSON"), "JSON")
+        self.assertEqual(map_type("NUMERIC(18, 12)"), "NUMERIC(18,12)")
+        self.assertEqual(map_type("DATETIME"), "TIMESTAMPTZ")
+
     def test_reqsys_like_contract_is_supported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "reqsys-like.sqlite"
