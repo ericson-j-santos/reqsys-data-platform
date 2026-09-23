@@ -22,18 +22,20 @@ semânticas que ainda não possuem conversão explícita.
 
 Contratos suportados no v2, extraídos da `main` atual do ReqSys:
 - `DATE` e `DATETIME` (DATETIME é tratado como UTC e migrado para TIMESTAMPTZ);
-- JSON -> JSONB;
+- JSON -> JSON e JSONB -> JSONB, preservando a semântica do tipo de origem;
 - NUMERIC/DECIMAL preservando precisão e escala;
 - defaults `CURRENT_TIMESTAMP`, literais, números e NULL;
 - índices secundários e índices únicos;
 - foreign keys, inclusive ações ON UPDATE/ON DELETE permitidas pelo SQLite;
-- PK inteira simples como identity PostgreSQL, com sequence sincronizada após a carga.
+- PK INTEGER simples como `SERIAL`, alinhada ao SQLAlchemy/PostgreSQL do ReqSys, com sequence sincronizada após a carga;
 
 A fonte do contrato do produto fica em
 `contracts/reqsys-product-schema-source.json`. O CI faz checkout do SHA fixado,
 materializa `Base.metadata` em SQLite usando o próprio ReqSys, analisa o schema,
-migra todas as tabelas para PostgreSQL 16 e verifica tabelas, índices, FKs e
-replay idempotente por leitura independente.
+migra todas as tabelas para PostgreSQL 16 e, adicionalmente, materializa o mesmo
+`Base.metadata` diretamente em PostgreSQL. O gate compara semântica de colunas,
+comprimentos, precisão/escala, defaults, PKs, índices e FKs entre o resultado do
+migrador e o schema PostgreSQL canônico do produto, além do replay idempotente.
 
 ### Analisar um SQLite
 
