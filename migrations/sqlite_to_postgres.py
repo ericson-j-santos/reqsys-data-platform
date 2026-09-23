@@ -82,7 +82,7 @@ def _canonical_value(value: Any, pg_type: str) -> Any:
         return None
     if pg_type == "BOOLEAN":
         return bool(value)
-    if pg_type == "BIGINT":
+    if pg_type in {"INTEGER", "BIGINT", "SMALLINT"}:
         return int(value)
     if pg_type == "DOUBLE PRECISION":
         return format(float(value), ".17g")
@@ -97,17 +97,21 @@ def _canonical_value(value: Any, pg_type: str) -> Any:
         return _canonical_date(value)
     if pg_type == "TIMESTAMPTZ":
         return _canonical_datetime(value)
-    if pg_type == "JSONB":
+    if pg_type in {"JSON", "JSONB"}:
         return _canonical_json(value)
     return str(value)
 
-
-def _coerce_for_postgres(value: Any, pg_type: str, Json: Any, Jsonb: Any) -> Any:
+def _coerce_for_postgres(
+    value: Any,
+    pg_type: str,
+    Json: Any,
+    Jsonb: Any,
+) -> Any:
     if value is None:
         return None
     if pg_type == "BOOLEAN":
         return bool(value)
-    if pg_type == "BIGINT":
+    if pg_type in {"INTEGER", "BIGINT", "SMALLINT"}:
         return int(value)
     if pg_type == "DOUBLE PRECISION":
         return float(value)
@@ -122,10 +126,10 @@ def _coerce_for_postgres(value: Any, pg_type: str, Json: Any, Jsonb: Any) -> Any
     if pg_type == "TIMESTAMPTZ":
         raw = value
         if not isinstance(raw, datetime):
-            text = str(raw).strip()
-            if text.endswith("Z"):
-                text = text[:-1] + "+00:00"
-            raw = datetime.fromisoformat(text)
+            text_value = str(raw).strip()
+            if text_value.endswith("Z"):
+                text_value = text_value[:-1] + "+00:00"
+            raw = datetime.fromisoformat(text_value)
         if raw.tzinfo is None:
             raw = raw.replace(tzinfo=timezone.utc)
         return raw
@@ -133,7 +137,6 @@ def _coerce_for_postgres(value: Any, pg_type: str, Json: Any, Jsonb: Any) -> Any
         parsed = json.loads(value) if isinstance(value, str) else value
         return Jsonb(parsed) if pg_type == "JSONB" else Json(parsed)
     return str(value)
-
 
 def _sqlite_rows(
     connection: Any,
@@ -193,12 +196,13 @@ def _source_evidence(
 
 def _pg_type_details(pg_type: str) -> tuple[str, int | None, int | None, int | None]:
     upper = pg_type.upper()
-    character = re.fullmatch(r"(VARCHAR|CHAR)(?:\\((\\d+)\\))?", upper)
+    character = re.fullmatch(r"(VARCHAR|CHAR)(?:\((\d+)\))?", upper)
     if character:
         kind, length = character.groups()
         data_type = "character varying" if kind == "VARCHAR" else "character"
         return data_type, int(length) if length else None, None, None
-    numeric = re.fullmatch(r"NUMERIC(?:\\((\\d+)(?:,(\\d+))?\\))?", upper)
+
+    numeric = re.fullmatch(r"NUMERIC(?:\((\d+)(?:,(\d+))?\))?", upper)
     if numeric:
         precision, scale = numeric.groups()
         return (
@@ -207,6 +211,7 @@ def _pg_type_details(pg_type: str) -> tuple[str, int | None, int | None, int | N
             int(precision) if precision else None,
             int(scale) if scale else None,
         )
+
     mapping = {
         "INTEGER": "integer",
         "BIGINT": "bigint",
@@ -223,7 +228,6 @@ def _pg_type_details(pg_type: str) -> tuple[str, int | None, int | None, int | N
     if upper not in mapping:
         raise PreflightError(f"unsupported PostgreSQL type mapping: {pg_type}")
     return mapping[upper], None, None, None
-
 
 def _postgres_table_signature(
     pg: Any,
@@ -461,6 +465,7 @@ def _upsert_source_rows(
     sqlite_db: Any,
     pg: Any,
     sql: Any,
+    Json: Any,
     Jsonb: Any,
     schema: str,
     contract: TableContract,

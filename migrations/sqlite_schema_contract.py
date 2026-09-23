@@ -15,7 +15,7 @@ from typing import Any
 _ALLOWED_FK_ACTIONS = {"NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"}
 _NUMERIC_TYPE = re.compile(r"^(?:NUMERIC|DECIMAL)(?:\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\))?$")
 _NUMERIC_DEFAULT = re.compile(r"^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$")
-_IDENTIFIER_CLEAN = re.compile(r"[^A-Za-z0-9_]+")
+_CHAR_TYPE = re.compile(r"^(VARCHAR|NVARCHAR|CHAR|NCHAR)(?:\\s*\\(\\s*(\\d+)\\s*\\))?$")\n_IDENTIFIER_CLEAN = re.compile(r"[^A-Za-z0-9_]+")
 
 
 class SchemaContractError(ValueError):
