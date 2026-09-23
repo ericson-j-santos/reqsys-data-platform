@@ -101,3 +101,23 @@ jobs:
         env:
           REQSYS_PRODUCT_SCHEMA_DB: /tmp/reqsys-product-schema.sqlite
         run: python -m unittest -v tests/test_reqsys_product_schema_contract_e2e.py
+
+      - name: Materialize canonical ReqSys PostgreSQL schema
+        run: |
+          python scripts/materialize_reqsys_product_postgres_schema.py \
+            --product-root .product/reqsys \
+            --schema reqsys_product_expected
+
+      - name: Materialize migrated PostgreSQL schema for parity
+        run: |
+          python migrations/sqlite_to_postgres.py \
+            --source /tmp/reqsys-product-schema.sqlite \
+            --schema reqsys_product_migrated \
+            --correlation-id "parity-${GITHUB_SHA}" \
+            --environment ci
+
+      - name: Compare migration schema with canonical product PostgreSQL schema
+        env:
+          REQSYS_MIGRATED_SCHEMA: reqsys_product_migrated
+          REQSYS_EXPECTED_SCHEMA: reqsys_product_expected
+        run: python -m unittest -v tests/test_reqsys_product_postgres_parity_e2e.py
