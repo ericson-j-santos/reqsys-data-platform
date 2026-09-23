@@ -14,7 +14,7 @@ def _column_contract(pg: psycopg.Connection, schema: str) -> set[tuple]:
                CASE WHEN data_type = 'numeric' THEN numeric_scale ELSE NULL END,
                is_nullable,
                CASE
-                 WHEN column_default LIKE 'nextval(%' THEN 'sequence'
+                 WHEN left(coalesce(column_default, ''), 8) = 'nextval(' THEN 'sequence'
                  WHEN upper(coalesce(column_default, '')) IN ('CURRENT_TIMESTAMP', 'NOW()') THEN 'current_timestamp'
                  WHEN column_default IS NULL THEN 'none'
                  ELSE 'literal'
