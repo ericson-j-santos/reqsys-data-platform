@@ -1,0 +1,42 @@
+# Bancos e dumps
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dump
+*.bak
+*.backup
+*.bkp
+
+# Dados/exportações
+*.parquet
+*.feather
+*.avro
+*.orc
+*.ndjson
+*.jsonl
+exports/
+backups/
+artifacts/
+
+# Segredos/ambiente
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# IDE/SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
