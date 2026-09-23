@@ -39,16 +39,16 @@ class VerificationError(RuntimeError):
     """Raised when post-migration evidence differs from the source."""
 
 
-def _load_psycopg() -> tuple[Any, Any, Any]:
+def _load_psycopg() -> tuple[Any, Any, Any, Any]:
     try:
         import psycopg
         from psycopg import sql
-        from psycopg.types.json import Jsonb
+        from psycopg.types.json import Json, Jsonb
     except ImportError as exc:
         raise RuntimeError(
             "psycopg is required for PostgreSQL migration; install requirements-ci.txt"
         ) from exc
-    return psycopg, sql, Jsonb
+    return psycopg, sql, Json, Jsonb
 
 
 def _canonical_datetime(value: Any) -> str:
@@ -102,7 +102,7 @@ def _canonical_value(value: Any, pg_type: str) -> Any:
     return str(value)
 
 
-def _coerce_for_postgres(value: Any, pg_type: str, Jsonb: Any) -> Any:
+def _coerce_for_postgres(value: Any, pg_type: str, Json: Any, Jsonb: Any) -> Any:
     if value is None:
         return None
     if pg_type == "BOOLEAN":
@@ -129,9 +129,9 @@ def _coerce_for_postgres(value: Any, pg_type: str, Jsonb: Any) -> Any:
         if raw.tzinfo is None:
             raw = raw.replace(tzinfo=timezone.utc)
         return raw
-    if pg_type == "JSONB":
+    if pg_type in {"JSON", "JSONB"}:
         parsed = json.loads(value) if isinstance(value, str) else value
-        return Jsonb(parsed)
+        return Jsonb(parsed) if pg_type == "JSONB" else Json(parsed)
     return str(value)
 
 
@@ -191,26 +191,38 @@ def _source_evidence(
     return tables, overall.hexdigest()
 
 
-def _pg_information_schema_type(pg_type: str) -> str:
-    if pg_type == "BIGINT":
-        return "bigint"
-    if pg_type == "BOOLEAN":
-        return "boolean"
-    if pg_type == "TEXT":
-        return "text"
-    if pg_type == "DOUBLE PRECISION":
-        return "double precision"
-    if pg_type.startswith("NUMERIC"):
-        return "numeric"
-    if pg_type == "BYTEA":
-        return "bytea"
-    if pg_type == "DATE":
-        return "date"
-    if pg_type == "TIMESTAMPTZ":
-        return "timestamp with time zone"
-    if pg_type == "JSONB":
-        return "jsonb"
-    raise PreflightError(f"unsupported PostgreSQL type mapping: {pg_type}")
+def _pg_type_details(pg_type: str) -> tuple[str, int | None, int | None, int | None]:
+    upper = pg_type.upper()
+    character = re.fullmatch(r"(VARCHAR|CHAR)(?:\\((\\d+)\\))?", upper)
+    if character:
+        kind, length = character.groups()
+        data_type = "character varying" if kind == "VARCHAR" else "character"
+        return data_type, int(length) if length else None, None, None
+    numeric = re.fullmatch(r"NUMERIC(?:\\((\\d+)(?:,(\\d+))?\\))?", upper)
+    if numeric:
+        precision, scale = numeric.groups()
+        return (
+            "numeric",
+            None,
+            int(precision) if precision else None,
+            int(scale) if scale else None,
+        )
+    mapping = {
+        "INTEGER": "integer",
+        "BIGINT": "bigint",
+        "SMALLINT": "smallint",
+        "BOOLEAN": "boolean",
+        "TEXT": "text",
+        "DOUBLE PRECISION": "double precision",
+        "BYTEA": "bytea",
+        "DATE": "date",
+        "TIMESTAMPTZ": "timestamp with time zone",
+        "JSON": "json",
+        "JSONB": "jsonb",
+    }
+    if upper not in mapping:
+        raise PreflightError(f"unsupported PostgreSQL type mapping: {pg_type}")
+    return mapping[upper], None, None, None
 
 
 def _postgres_table_signature(
@@ -220,7 +232,10 @@ def _postgres_table_signature(
 ) -> tuple[tuple[Any, ...], ...]:
     rows = pg.execute(
         """
-        SELECT column_name, data_type, is_nullable, is_identity
+        SELECT column_name, data_type, character_maximum_length,
+               CASE WHEN data_type = 'numeric' THEN numeric_precision ELSE NULL END,
+               CASE WHEN data_type = 'numeric' THEN numeric_scale ELSE NULL END,
+               is_nullable
         FROM information_schema.columns
         WHERE table_schema = %s AND table_name = %s
         ORDER BY ordinal_position
@@ -231,15 +246,20 @@ def _postgres_table_signature(
 
 
 def _expected_pg_signature(contract: TableContract) -> tuple[tuple[Any, ...], ...]:
-    return tuple(
-        (
-            column.name,
-            _pg_information_schema_type(column.pg_type),
-            "YES" if column.nullable else "NO",
-            "YES" if contract.identity_column == column.name else "NO",
+    expected: list[tuple[Any, ...]] = []
+    for column in contract.columns:
+        data_type, length, precision, scale = _pg_type_details(column.pg_type)
+        expected.append(
+            (
+                column.name,
+                data_type,
+                length,
+                precision,
+                scale,
+                "YES" if column.nullable else "NO",
+            )
         )
-        for column in contract.columns
-    )
+    return tuple(expected)
 
 
 def _postgres_primary_key(pg: Any, schema: str, table: str) -> tuple[str, ...]:
@@ -320,7 +340,7 @@ def preflight_migration(
     finally:
         sqlite_db.close()
 
-    psycopg, _sql, _Jsonb = _load_psycopg()
+    psycopg, _sql, _Json, _Jsonb = _load_psycopg()
     with psycopg.connect(postgres_dsn) as pg:
         database, server_version, can_create = pg.execute(
             """
@@ -407,9 +427,14 @@ def _create_target_table(
 ) -> None:
     definitions: list[Any] = []
     for column in contract.columns:
-        parts = [sql.Identifier(column.name), sql.SQL(column.pg_type)]
         if contract.identity_column == column.name:
-            parts.append(sql.SQL("GENERATED BY DEFAULT AS IDENTITY"))
+            if column.pg_type != "INTEGER":
+                raise PreflightError(
+                    f"serial identity requires INTEGER: {contract.name}.{column.name}"
+                )
+            parts = [sql.Identifier(column.name), sql.SQL("SERIAL")]
+        else:
+            parts = [sql.Identifier(column.name), sql.SQL(column.pg_type)]
         default = _default_fragment(sql, column)
         if default is not None:
             parts.append(default)
@@ -487,7 +512,7 @@ def _upsert_source_rows(
                 break
             payload = [
                 tuple(
-                    _coerce_for_postgres(value, column.pg_type, Jsonb)
+                    _coerce_for_postgres(value, column.pg_type, Json, Jsonb)
                     for value, column in zip(row, contract.columns, strict=True)
                 )
                 for row in rows
@@ -676,7 +701,7 @@ def migrate_sqlite_to_postgres(
         sqlite_db, contracts = strict_schema_contract(source_path)
     except SchemaContractError as exc:
         raise PreflightError(str(exc)) from exc
-    psycopg, sql, Jsonb = _load_psycopg()
+    psycopg, sql, Json, Jsonb = _load_psycopg()
 
     try:
         current_tables, current_fingerprint = _source_evidence(sqlite_db, contracts)
@@ -714,6 +739,7 @@ def migrate_sqlite_to_postgres(
                     sqlite_db,
                     pg,
                     sql,
+                    Json,
                     Jsonb,
                     schema,
                     contract,
