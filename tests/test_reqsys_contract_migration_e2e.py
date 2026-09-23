@@ -114,17 +114,6 @@ class ReqSysLikeSQLiteToPostgresE2E(unittest.TestCase):
             self.assertEqual(str(project[4]), "12.340000")
             self.assertEqual(project[5], {"kind": "synthetic", "values": [1, 2]})
 
-            next_id = pg.execute(
-                sql.SQL(
-                    "INSERT INTO {}.{}(code, reference_date, amount, payload) "
-                    "VALUES (%s, %s, %s, %s::jsonb) RETURNING id, provider, created_at"
-                ).format(sql.Identifier(self.schema), sql.Identifier("projects")),
-                ("REQSYS-NEXT", "2026-09-24", "1.000000", '{"ok":true}'),
-            ).fetchone()
-            self.assertGreater(next_id[0], 7)
-            self.assertEqual(next_id[1], "hash-local-256")
-            self.assertIsNotNone(next_id[2])
-
             with self.assertRaises(errors.ForeignKeyViolation):
                 with pg.transaction():
                     pg.execute(
@@ -163,16 +152,35 @@ class ReqSysLikeSQLiteToPostgresE2E(unittest.TestCase):
             automation_sha=os.environ.get("GITHUB_SHA", "test-head"),
         )
         self.assertEqual(second["replay_count"], 2)
+
         with psycopg.connect(self.dsn) as pg:
             self.assertEqual(
                 pg.execute(
-                    sql.SQL("SELECT COUNT(*) FROM {}.{} WHERE id IN (7, 11)").format(
+                    sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
                         sql.Identifier(self.schema), sql.Identifier("projects")
                     )
                 ).fetchone()[0],
                 1,
             )
+            self.assertEqual(
+                pg.execute(
+                    sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                        sql.Identifier(self.schema), sql.Identifier("tasks")
+                    )
+                ).fetchone()[0],
+                1,
+            )
 
+            next_id = pg.execute(
+                sql.SQL(
+                    "INSERT INTO {}.{}(code, reference_date, amount, payload) "
+                    "VALUES (%s, %s, %s, %s::json) RETURNING id, provider, created_at"
+                ).format(sql.Identifier(self.schema), sql.Identifier("projects")),
+                ("REQSYS-NEXT", "2026-09-24", "1.000000", '{"ok":true}'),
+            ).fetchone()
+            self.assertGreater(next_id[0], 7)
+            self.assertEqual(next_id[1], "hash-local-256")
+            self.assertIsNotNone(next_id[2])
 
 if __name__ == "__main__":
     unittest.main()
