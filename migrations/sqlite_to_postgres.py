@@ -619,10 +619,7 @@ def _sync_identity_sequence(
     column = contract.identity_column
     if not column:
         return
-    relation = pg.execute(
-        "SELECT format('%I.%I', %s, %s)",
-        (schema, contract.name),
-    ).fetchone()[0]
+    relation = sql.Identifier(schema, contract.name).as_string(pg)
     sequence = pg.execute(
         "SELECT pg_get_serial_sequence(%s, %s)",
         (relation, column),
