@@ -1,0 +1,16 @@
+name: Data Safety Gate
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Block real data and secret-like artifacts
+        run: python scripts/check_repository_hygiene.py
