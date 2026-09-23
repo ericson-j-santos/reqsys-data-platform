@@ -106,25 +106,34 @@ def map_type(declared_type: str) -> str:
             return f"NUMERIC({precision})"
         return "NUMERIC"
 
+    character = _CHAR_TYPE.fullmatch(normalized)
+    if character:
+        kind, length = character.groups()
+        target = "VARCHAR" if kind in {"VARCHAR", "NVARCHAR"} else "CHAR"
+        return f"{target}({length})" if length else target
+
     base = re.sub(r"\s*\(.*\)\s*$", "", normalized)
-    if base in {"DATE"}:
+    if base == "DATE":
         return "DATE"
     if base in {"DATETIME", "TIMESTAMP"}:
         return "TIMESTAMPTZ"
     if base in {"JSON", "JSONB"}:
-        return "JSONB"
+        return base
+    if base == "INTEGER":
+        return "INTEGER"
+    if base == "BIGINT":
+        return "BIGINT"
+    if base == "SMALLINT":
+        return "SMALLINT"
     if "BOOL" in base:
         return "BOOLEAN"
-    if "INT" in base:
-        return "BIGINT"
-    if any(token in base for token in ("CHAR", "CLOB", "TEXT", "VARCHAR")):
+    if any(token in base for token in ("CLOB", "TEXT")):
         return "TEXT"
     if any(token in base for token in ("REAL", "FLOA", "DOUB")):
         return "DOUBLE PRECISION"
     if "BLOB" in base:
         return "BYTEA"
     raise SchemaContractError(f"unsupported SQLite declared type: {declared_type}")
-
 
 def normalize_default(default_value: Any) -> tuple[str | None, str | None]:
     if default_value is None:
