@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "source_repository": "ericson-j-santos/reqsys-v2-enterprise-real",
+  "source_sha": "680b39d1a722e4b2bb63ea09033c8bbf880e906d",
+  "source_kind": "sqlalchemy-base-metadata-materialized-as-sqlite",
+  "model_files_scanned": 30,
+  "static_occurrences": {
+    "foreign_key": 14,
+    "server_default": 56,
+    "index_true": 211,
+    "unique_true": 17,
+    "unique_constraint": 8,
+    "datetime_type": 100,
+    "date_type": 8,
+    "numeric_type": 3,
+    "json_type": 3,
+    "boolean_type": 18,
+    "float_type": 14
+  },
+  "required_contracts": [
+    "current_timestamp_and_literal_defaults",
+    "date_and_datetime",
+    "json",
+    "numeric_precision_scale",
+    "secondary_and_unique_indexes",
+    "foreign_keys_with_actions",
+    "integer_primary_key_identity"
+  ]
+}
