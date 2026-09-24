@@ -1,0 +1,12 @@
+# Ownership padrão
+* @ericson-j-santos
+
+# Superfícies críticas de dados e CI
+/.github/ @ericson-j-santos
+/contracts/ @ericson-j-santos
+/schemas/ @ericson-j-santos
+/migrations/ @ericson-j-santos
+/backup/ @ericson-j-santos
+/restore/ @ericson-j-santos
+/data_quality/ @ericson-j-santos
+/scripts/ @ericson-j-santos
