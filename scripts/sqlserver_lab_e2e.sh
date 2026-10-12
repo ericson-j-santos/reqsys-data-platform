@@ -18,7 +18,7 @@ mkdir -p artifacts/sqlserver-lab
 trap 'docker rm -f "$LAB_CONTAINER" >/dev/null 2>&1 || true' EXIT
 
 # Random temporary lab credential, never printed or persisted.
-MSSQL_SA_PASSWORD="Aa9!$(openssl rand -hex 24)"
+read -r MSSQL_SA_PASSWORD < <(printf "Aa9!%s\n" "$(openssl rand -hex 24)")
 export MSSQL_SA_PASSWORD
 echo "::add-mask::$MSSQL_SA_PASSWORD"
 docker pull "$IMAGE" >/dev/null
@@ -31,7 +31,7 @@ sql() {
   local query="$1"
   local database="$2"
   docker exec "$LAB_CONTAINER" /bin/bash -c \
-    'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" exec /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -V 16 -l 5 -h -1 -W -d "$2" -Q "SET NOCOUNT ON; $1"' \
+    'printf -v SQLCMDPASSWORD %s "$MSSQL_SA_PASSWORD"; export SQLCMDPASSWORD; exec /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -V 16 -l 5 -h -1 -W -d "$2" -Q "SET NOCOUNT ON; $1"' \
     sqlcmd "$query" "$database"
 }
 scalar() {

@@ -37,7 +37,7 @@ jobs:
         run: bash scripts/sqlserver_lab_e2e.sh
       - name: Publish sanitized evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
         with:
           name: sqlserver-lab-e2e-${{ github.run_id }}
           path: artifacts/sqlserver-lab/evidence.json
