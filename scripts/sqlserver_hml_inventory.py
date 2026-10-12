@@ -99,8 +99,8 @@ def collect(env: Mapping[str, str], connect: Callable[..., object]) -> dict:
         if any(x != 0 for x in (admin, owner, writer, ddladmin)):
             raise InventoryBlocked("privileged_identity_not_allowed")
         (compat_level,) = _one(conn, COMPAT_SQL)
-        if not isinstance(compat_level, int) or compat_level < 130:
-            raise InventoryBlocked("compatibility_level_unsupported")
+        if not isinstance(compat_level, int) or compat_level < 100:
+            raise InventoryBlocked("compatibility_level_invalid")
         actual, desired, reason = _one(conn, QS_SQL)
         (encrypted,) = _one(conn, TLS_SQL)
         if str(encrypted).upper() not in {"TRUE", "YES", "1"}:
@@ -114,6 +114,7 @@ def collect(env: Mapping[str, str], connect: Callable[..., object]) -> dict:
             "product_version": str(product),
             "edition": str(edition),
             "compatibility_level": compat_level,
+            "openjson_compatible": compat_level >= 130,
             "query_store_actual": str(actual),
             "query_store_desired": str(desired),
             "query_store_readonly_reason": int(reason),

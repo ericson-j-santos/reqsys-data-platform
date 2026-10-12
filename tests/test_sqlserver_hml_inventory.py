@@ -70,6 +70,7 @@ class ProbeTests(unittest.TestCase):
         result = probe.collect(self.env, self.connect)
         self.assertEqual("observed", result["status"])
         self.assertEqual(170, result["compatibility_level"])
+        self.assertTrue(result["openjson_compatible"])
         self.assertEqual("READ_WRITE", result["query_store_actual"])
         self.assertTrue(result["tls_encrypted"])
         self.assertEqual(4, len(self.conn.executed))
@@ -125,9 +126,14 @@ class ProbeTests(unittest.TestCase):
         with self.assertRaisesRegex(probe.InventoryBlocked, "privileged_identity_not_allowed"):
             probe.collect(self.env, self.connect)
         self.assertEqual([probe.VERSION_SQL], self.conn.executed)
-    def test_old_compatibility_blocks(self):
+    def test_old_compatibility_reports_openjson_incompatibility(self):
         self.conn.rows[probe.COMPAT_SQL] = (120,)
-        with self.assertRaisesRegex(probe.InventoryBlocked, "compatibility_level_unsupported"):
+        result = probe.collect(self.env, self.connect)
+        self.assertEqual(120, result["compatibility_level"])
+        self.assertFalse(result["openjson_compatible"])
+    def test_malformed_compatibility_blocks(self):
+        self.conn.rows[probe.COMPAT_SQL] = ("?",)
+        with self.assertRaisesRegex(probe.InventoryBlocked, "compatibility_level_invalid"):
             probe.collect(self.env, self.connect)
         self.assertEqual([probe.VERSION_SQL, probe.COMPAT_SQL], self.conn.executed)
     def test_tls_unencrypted_blocks(self):

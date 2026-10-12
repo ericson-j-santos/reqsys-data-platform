@@ -33,6 +33,8 @@ jobs:
         run: |
           python scripts/check_governance_contract.py
           python -m unittest discover -s tests -p 'test_governance_contract.py' -v
+      - name: Validate SQL Server HML inventory guardrails
+        run: python -m unittest discover -s tests -p 'test_sqlserver_hml_inventory.py' -v
 
   backup-restore-e2e:
     runs-on: ubuntu-latest
