@@ -1,0 +1,45 @@
+name: SQL Server 2025 Synthetic Engine E2E
+
+on:
+  pull_request:
+    paths:
+      - "scripts/sqlserver_lab_e2e.sh"
+      - ".github/workflows/sqlserver-lab-e2e.yml"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/sqlserver_lab_e2e.sh"
+      - ".github/workflows/sqlserver-lab-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sqlserver-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sqlserver-synthetic-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    env:
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout immutable source SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Validate shell syntax
+        run: bash -n scripts/sqlserver_lab_e2e.sh
+      - name: Run real SQL Server engine E2E in isolated disposable container
+        run: bash scripts/sqlserver_lab_e2e.sh
+      - name: Publish sanitized evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: sqlserver-lab-e2e-${{ github.run_id }}
+          path: artifacts/sqlserver-lab/evidence.json
+          if-no-files-found: warn
+          retention-days: 14
