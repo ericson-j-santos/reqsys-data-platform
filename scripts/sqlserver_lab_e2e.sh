@@ -31,7 +31,7 @@ sql() {
   local query="$1"
   local database="$2"
   docker exec "$LAB_CONTAINER" /bin/bash -c \
-    'printf -v SQLCMDPASSWORD %s "$MSSQL_SA_PASSWORD"; export SQLCMDPASSWORD; exec /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -C -b -V 16 -l 5 -h -1 -W -d "$2" -Q "SET NOCOUNT ON; $1"' \
+    'printf -v SQLCMDPASSWORD %s "$MSSQL_SA_PASSWORD"; export SQLCMDPASSWORD; exec /opt/mssql-tools18/bin/sqlcmd -S tcp:127.0.0.1,1433 -U sa -C -b -V 16 -l 5 -h -1 -W -d "$2" -Q "SET NOCOUNT ON; $1"' \
     sqlcmd "$query" "$database"
 }
 scalar() {
