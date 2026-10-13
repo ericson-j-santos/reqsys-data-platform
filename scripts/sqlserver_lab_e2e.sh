@@ -22,7 +22,7 @@ read -r MSSQL_SA_PASSWORD < <(printf "Aa9!%s\n" "$(openssl rand -hex 24)")
 export MSSQL_SA_PASSWORD
 echo "::add-mask::$MSSQL_SA_PASSWORD"
 docker pull "$IMAGE" >/dev/null
-docker run --detach --rm --network none --memory 4g --cpus 2 \
+docker run --detach --network none --memory 4g --cpus 2 \
   --name "$LAB_CONTAINER" --hostname sql2025-lab \
   --env ACCEPT_EULA=Y --env MSSQL_PID=Developer --env MSSQL_SA_PASSWORD \
   "$IMAGE" >/dev/null
@@ -45,10 +45,29 @@ assert_same() {
 
 READY=0
 for _ in $(seq 1 45); do
+  # Docker may report a created container even after sqlservr has crashed.
+  if [[ "$(docker inspect --format '{{.State.Running}}' "$LAB_CONTAINER" 2>/dev/null || true)" != "true" ]]; then
+    echo "LAB_CONTAINER_EXITED" >&2
+    break
+  fi
+  if ! docker exec "$LAB_CONTAINER" test -x /opt/mssql-tools18/bin/sqlcmd >/dev/null 2>&1; then
+    echo "LAB_SQLCMD_NOT_PRESENT" >&2
+    break
+  fi
   if sql "SELECT 1;" master >/dev/null 2>&1; then READY=1; break; fi
   sleep 4
 done
-if [[ "$READY" != "1" ]]; then echo "LAB_ENGINE_NOT_READY" >&2; exit 2; fi
+if [[ "$READY" != "1" ]]; then
+  echo "LAB_ENGINE_NOT_READY" >&2
+  echo "LAB_CONTAINER_STATE=$(docker inspect --format '{{.State.Status}}' "$LAB_CONTAINER" 2>/dev/null || echo unknown)" >&2
+  echo "LAB_CONTAINER_EXIT_CODE=$(docker inspect --format '{{.State.ExitCode}}' "$LAB_CONTAINER" 2>/dev/null || echo unknown)" >&2
+  echo "LAB_CONTAINER_OOM_KILLED=$(docker inspect --format '{{.State.OOMKilled}}' "$LAB_CONTAINER" 2>/dev/null || echo unknown)" >&2
+  # Only diagnostic labels and known engine startup messages; never dump env.
+  docker logs --tail 100 "$LAB_CONTAINER" 2>&1 \
+    | grep -E 'SQL Server is now ready|encountered a fatal error|Reason:|Message:|Error:|error:|Exception|ASSERT:|failed|Failure' \
+    | head -n 24 >&2 || true
+  exit 2
+fi
 ENGINE_VERSION="$(scalar "SELECT CONVERT(varchar(64), SERVERPROPERTY('ProductVersion'));" master)"
 case "$ENGINE_VERSION" in 17.*) ;; *) echo "LAB_UNEXPECTED_ENGINE_VERSION" >&2; exit 1 ;; esac
 EDITION="$(scalar "SELECT CONVERT(nvarchar(128), SERVERPROPERTY('Edition'));" master)"
