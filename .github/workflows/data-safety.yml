@@ -35,6 +35,8 @@ jobs:
           python -m unittest discover -s tests -p 'test_governance_contract.py' -v
       - name: Validate SQL Server HML inventory guardrails
         run: python -m unittest discover -s tests -p 'test_sqlserver_hml_inventory.py' -v
+      - name: Validate SQL Server enterprise probe and evidence controls
+        run: python -m unittest discover -s tests -p 'test_sqlserver_enterprise_validation.py' -v
 
   backup-restore-e2e:
     runs-on: ubuntu-latest
