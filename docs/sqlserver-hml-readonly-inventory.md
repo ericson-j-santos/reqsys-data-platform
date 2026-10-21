@@ -20,7 +20,7 @@ O executor precisa cumprir as regras em `ericson-j-santos/chatgpt-operational-ru
 | `SQLSERVER_INVENTORY_SOURCE_SHA` | SHA Git completo (40 caracteres) do código executado |
 | `SQLSERVER_CORRELATION_ID` | Identificador único e rastreável da execução |
 
-O DSN só é aceito com campos simples separados por ponto e vírgula; formatos ODBC com valores entre chaves contendo ponto e vírgula falham fechados. Identidade administrativa (sysadmin, db_owner, db_datawriter ou db_ddladmin) é recusada. Esses controles **não substituem** validação de permissões no servidor nem garantem ausência de grants diretos.
+O DSN só é aceito com campos simples separados por ponto e vírgula; formatos ODBC com valores entre chaves contendo ponto e vírgula falham fechados. Antes de abrir uma conexão, o valor `Server=` do DSN precisa corresponder a `SQLSERVER_EXPECTED_SERVER` (sem distinção entre maiúsculas e minúsculas); divergência produz `dsn_server_mismatch` e impede qualquer consulta ao servidor incorreto. A identidade real continua sendo comparada após a conexão, pois essa conferência estática não autentica o destino. Identidade administrativa (sysadmin, db_owner, db_datawriter ou db_ddladmin) é recusada. Esses controles **não substituem** validação de permissões no servidor nem garantem ausência de grants diretos.
 
 ## Procedimento seguro
 

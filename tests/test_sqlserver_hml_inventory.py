@@ -111,6 +111,20 @@ class ProbeTests(unittest.TestCase):
         with self.assertRaises(probe.InventoryBlocked):
             probe.collect(self.env, self.connect)
         self.assertEqual([], self.calls)
+    def test_dsn_server_mismatch_rejected_before_connection(self):
+        self.env["SQLSERVER_HML_DSN"] = self.env["SQLSERVER_HML_DSN"].replace(
+            "Server=hml-server;", "Server=prod-server;")
+        with self.assertRaisesRegex(probe.InventoryBlocked, "dsn_server_mismatch"):
+            probe.collect(self.env, self.connect)
+        self.assertEqual([], self.calls)
+
+    def test_dsn_server_casefold_matches_approved_server(self):
+        self.env["SQLSERVER_HML_DSN"] = self.env["SQLSERVER_HML_DSN"].replace(
+            "Server=hml-server;", "Server=HML-SERVER;")
+        result = probe.collect(self.env, self.connect)
+        self.assertEqual("observed", result["status"])
+        self.assertEqual(1, len(self.calls))
+
     def test_wrong_server_rejects_without_querying_other_metadata(self):
         self.conn.rows[probe.VERSION_SQL] = (
             "17.0.5005.3", "Developer Edition", "prod-server",
