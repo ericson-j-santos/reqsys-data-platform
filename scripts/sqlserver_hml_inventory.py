@@ -67,6 +67,8 @@ def _validate_scope(env: Mapping[str, str]) -> str:
         raise InventoryBlocked("readonly_intent_missing")
     if not f.get("server") or not f.get("database"):
         raise InventoryBlocked("dsn_target_missing")
+    if f["server"].casefold() != env["SQLSERVER_EXPECTED_SERVER"].casefold():
+        raise InventoryBlocked("dsn_server_mismatch")
     if f["database"].casefold() != env["SQLSERVER_EXPECTED_DATABASE"].casefold():
         raise InventoryBlocked("dsn_database_mismatch")
     if f["database"].casefold() in {"master", "model", "msdb", "tempdb"}:
